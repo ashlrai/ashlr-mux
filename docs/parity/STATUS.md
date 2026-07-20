@@ -180,9 +180,9 @@ development WebView at `localhost:1420`. See
 
 The rolling catalog contains 503 rows: 159 public CLI commands, 16 internal CLI
 contracts, 263 release socket methods, 46 debug socket methods, and 19 coarse
-product umbrellas. It currently classifies 99 rows as verified, 3 as reviewed
-platform equivalents, 183 as implemented but unverified, and 218 as missing.
-The strict resolved count is 102. These are entry-point rows, not a user-facing
+product umbrellas. It currently classifies 141 rows as verified, 3 as reviewed
+platform equivalents, 141 as implemented but unverified, and 218 as missing.
+The strict resolved count is 144. These are entry-point rows, not a user-facing
 completion percentage.
 
 The zero-delta window lane promotes 11 entry-point rows. `window.create`,
@@ -209,6 +209,18 @@ ten desktop v2 methods and seven CLI commands. The authenticated mobile-host
 `notification.reconcile` RPC is deliberately not advertised on the desktop
 socket and remains outside this lane, as do native delivery, restart
 persistence, and the broad `product.notifications` umbrella.
+
+The zero-delta core-browser lane promotes 42 exercised public v2 methods from
+44 retained cases. It covers response identity and schemas, reads, waits,
+scoped interactive snapshots, accessibility refs, locators, pointer and
+keyboard actions, form mutations, scrolling, highlighting, and script/style
+injection with independent DOM probes. Only snapshot
+`/response/result/page/text` has a reviewed platform pointer for native
+`body.innerText` whitespace serialization; the accessibility tree, refs, HTML,
+URL, title, ready state, locators, actions, and mutations remain strict. CLI
+browser entry points, advanced browser APIs, persistence, and the broad
+`product.browser` umbrella remain unverified. See
+`evidence/browser_core_2026-07-20.json`.
 
 Those numbers are useful for finding API gaps. They are not a percentage of the
 user experience. The catalog still needs a deduplicated user-capability layer
@@ -251,7 +263,7 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   `docs/archive/windows-port-legacy/`; they are preserved evidence, not active
   instructions.
 - The previously monolithic files remain split: `control_socket.rs` is now
-  3,874 physical lines (from 23,219), `session.rs` is 5,079 (from 12,059), and
+  3,859 physical lines (from 23,219), `session.rs` is 5,027 (from 12,059), and
   `CustomSidebarSurface.tsx` is 4,795 (from 12,003). Extracted modules retain
   the same public entry points. The 106-line `session/control_snapshot.rs` owns
   control-worker lifecycle publication policy, and the 85-line
@@ -304,8 +316,12 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   `control_socket/window_lifecycle/events.rs` child module. The parent remains
   below its frozen file-length ceiling, and the production transition and
   publication executor share prepared window identities and key history.
-- `browser.rs` is now 3,284 physical lines. Its control-runtime presence checks
+- `browser.rs` is now 3,294 physical lines. Its control-runtime presence checks
   live in the 37-line `browser/control_state.rs` child module.
+- The 181-line `control_socket/browser_control/core_scripts.rs` child now owns
+  the scoped accessibility-snapshot DOM walker. The 3,307-line browser-control
+  dispatcher retains request routing and response shaping without embedding
+  that script body.
 - `terminal.rs` is now 2,895 measured lines (from 5,672 at the previous
   checkpoint). Its unchanged 2,772-line inline test body now remains in the
   same `terminal::tests::*` namespace through two include files of 1,425 and

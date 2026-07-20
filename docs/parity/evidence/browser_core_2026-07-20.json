@@ -1,0 +1,112 @@
+{
+  "schema_version": 2,
+  "family": "browser_core",
+  "status": "valid_complete_capture",
+  "canonical": {
+    "source_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+    "workflow_run": 29723759002,
+    "artifact": "canonical-capture-browser_core",
+    "capture_sha256": "B5467FD934D00AFD49862348F97AC9985DF4016EA4F1E018CD17070809A30FF1",
+    "cases": 44,
+    "capture_errors": 0
+  },
+  "windows": {
+    "behavior_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+    "capture_sha256": "1FA8807A7B0CE2CA2DD41BEE0B37F3DD59B31961EA28E9465C84A3246B9AF5D1",
+    "cases": 44,
+    "capture_errors": 0,
+    "profile_mode": "isolated_headless_guarded",
+    "visible_window_violation": false
+  },
+  "comparison": {
+    "manifest_and_archive_commit": "33fcae54b434f3ed24232d8aa178a8af4675f4ed",
+    "manifest_sha256": "CAAD44A2EA54185BAE0F5233C3BA7D9764122656E027EEF03745E59F3B4B48AF",
+    "sha256": "CE2D176A887D9D38D53F60B049482F57182C22F67A03B5EE74E4C5B87AA2C9CF",
+    "cases": 44,
+    "identical_or_reviewed_equivalent": 44,
+    "strict_deltas": 0,
+    "capture_integrity": {
+      "valid_for_promotion": true,
+      "canonical_capture_errors": [],
+      "windows_capture_errors": [],
+      "missing_cases": [],
+      "unsettled_cases": []
+    },
+    "archived_at": {
+      "canonical": "parity/diff-lane@33fcae54b4:docs/parity/differential/captures/browser_core.canonical.e1825d40d.run-29723759002.ndjson",
+      "windows": "parity/diff-lane@33fcae54b4:docs/parity/differential/captures/browser_core.windows.af8c2f8360.ndjson",
+      "normalized": "parity/diff-lane@33fcae54b4:docs/parity/differential/captures/browser_core.normalized-diff.e1825d40d-vs-af8c2f8360.json"
+    }
+  },
+  "platform_equivalences": {
+    "status": "reviewed_exact_json_pointers",
+    "categories": [
+      "WKWebView and WebView2 serialize document.body.innerText whitespace and select-option line breaks differently."
+    ],
+    "strict_guards": "Only /response/result/page/text in browser.snapshot_interactive is approved. The scoped accessibility tree, refs, page HTML, title, URL, ready state, locator behavior, action responses, and all DOM mutation probes remain strict."
+  },
+  "verification": {
+    "red_contract_tests": "7 browser core tests passed after the implementation change",
+    "desktop_library": "1139 passed, 1 ignored, 0 failed; repeated twice after simplification",
+    "differential_lane_tests": "113 passed, 0 failed",
+    "differential_comparison": "44 of 44 cases exact after one pointer-scoped reviewed normalization",
+    "format_and_whitespace": "cargo fmt --all -- --check and git diff --check passed",
+    "capture_process": "Owned hidden process with headless launch and descendant cleanup; no visible-window violation and ports 1420 and 43123 were clear after capture."
+  },
+  "organization": {
+    "result": "The canonical-compatible snapshot DOM walker was extracted into control_socket/browser_control/core_scripts.rs instead of growing the browser-control dispatcher further."
+  },
+  "promotion": {
+    "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+    "status": "verified",
+    "rows_promoted": [
+      "v2:browser.addinitscript",
+      "v2:browser.addscript",
+      "v2:browser.addstyle",
+      "v2:browser.check",
+      "v2:browser.click",
+      "v2:browser.dblclick",
+      "v2:browser.eval",
+      "v2:browser.fill",
+      "v2:browser.find.alt",
+      "v2:browser.find.first",
+      "v2:browser.find.label",
+      "v2:browser.find.last",
+      "v2:browser.find.nth",
+      "v2:browser.find.placeholder",
+      "v2:browser.find.role",
+      "v2:browser.find.testid",
+      "v2:browser.find.text",
+      "v2:browser.find.title",
+      "v2:browser.focus",
+      "v2:browser.get.attr",
+      "v2:browser.get.count",
+      "v2:browser.get.html",
+      "v2:browser.get.styles",
+      "v2:browser.get.text",
+      "v2:browser.get.title",
+      "v2:browser.get.value",
+      "v2:browser.highlight",
+      "v2:browser.hover",
+      "v2:browser.is.checked",
+      "v2:browser.is.enabled",
+      "v2:browser.is.visible",
+      "v2:browser.keydown",
+      "v2:browser.keyup",
+      "v2:browser.press",
+      "v2:browser.scroll",
+      "v2:browser.scroll_into_view",
+      "v2:browser.select",
+      "v2:browser.snapshot",
+      "v2:browser.type",
+      "v2:browser.uncheck",
+      "v2:browser.url.get",
+      "v2:browser.wait"
+    ],
+    "excluded_rows": [
+      "cli:browser",
+      "product.browser"
+    ],
+    "reason": "The 42 public v2 entry points retain exact behavioral evidence across 44 deterministic cases for response identity and schemas, scoped interactive snapshots, accessibility refs, locators, waits, input, keyboard and scroll actions, script/style injection, and independent DOM state probes. The CLI surface, advanced browser methods, persistence, and the broad product umbrella remain outside this lane."
+  }
+}

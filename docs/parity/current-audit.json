@@ -30,12 +30,12 @@
       "v2_method": 309
     },
     "by_status": {
-      "implemented_unverified": 183,
+      "implemented_unverified": 141,
       "missing": 218,
       "platform_equivalent": 3,
-      "verified": 99
+      "verified": 141
     },
-    "strict_verified": 102,
+    "strict_verified": 144,
     "total": 503,
     "warning": "Rows mix CLI commands, socket methods, debug endpoints, and broad product umbrellas. They are neither deduplicated user capabilities nor effort-weighted."
   },
@@ -45,10 +45,10 @@
     "status": "not_measured"
   },
   "windows": {
-    "commit": "2c2c831b154c3769daaa451bf481b5c42b0dec06",
-    "commit_date": "2026-07-20T02:24:48-04:00",
-    "commit_subject": "fix(notification): add specialized creation routes",
-    "commits_ahead_of_tracked_evidence": 214,
+    "commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+    "commit_date": "2026-07-20T03:54:14-04:00",
+    "commit_subject": "fix(browser): align core automation contracts",
+    "commits_ahead_of_tracked_evidence": 219,
     "source_evidence": {
       "advertised_and_routed_count": 260,
       "advertised_method_count": 273,

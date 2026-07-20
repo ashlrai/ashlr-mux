@@ -1,6 +1,174 @@
 {
   "schema_version": 1,
   "entries": {
+    "v2:browser.addinitscript": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.addscript": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.addstyle": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.check": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.click": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.dblclick": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.eval": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.fill": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.find.alt": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.find.first": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.find.label": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.find.last": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.find.nth": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.find.placeholder": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.find.role": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.find.testid": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.find.text": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.find.title": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.focus": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.get.attr": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.get.count": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.get.html": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.get.styles": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.get.text": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.get.title": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.get.value": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.highlight": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.hover": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.is.checked": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.is.enabled": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.is.visible": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.keydown": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.keyup": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.press": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.scroll": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.scroll_into_view": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.select": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.snapshot": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.type": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.uncheck": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.url.get": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
+    "v2:browser.wait": {
+      "latest_verifying_commit": "af8c2f8360f411336c569dc195437892bc4936d4",
+      "status": "verified"
+    },
     "cli:clear-notifications": {
       "latest_verifying_commit": "2c2c831b154c3769daaa451bf481b5c42b0dec06",
       "status": "verified"
